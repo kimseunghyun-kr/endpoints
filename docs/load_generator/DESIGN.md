@@ -309,9 +309,12 @@ async def _receive_responses(self):
             if self._strategy_task and not self._strategy_task.done():
                 self._strategy_task.cancel()
             break
-        self._handle_response(resp)
+        # One clock read per response, shared by the event records
+        # (RECV_FIRST/RECV_NON_FIRST/COMPLETE) and the liveness stamp.
+        now_ns = time.monotonic_ns()
+        self._handle_response(resp, now_ns)
         if self._endpoint_response_idle_timeout_ns is not None:
-            self._last_response_progress_ns = time.monotonic_ns()
+            self._last_response_progress_ns = now_ns
 ```
 
 Uses `recv()` exclusively — no `poll()` spin. The ZMQ fd is registered with the
@@ -335,7 +338,7 @@ returns as soon as the fd is readable and `eager_task_factory` executes the
 woken semaphore waiter synchronously, there is no added latency compared to a
 poll-based approach.
 
-**`_handle_response(resp)`**:
+**`_handle_response(resp, now_ns)`**:
 
 - `QueryResult`: publish COMPLETE event, decrement `_inflight`, call
   `on_sample_complete`, call `strategy.on_query_complete(query_id)` if strategy
