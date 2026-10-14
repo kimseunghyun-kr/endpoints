@@ -947,9 +947,11 @@ shorter strings, no parsing overhead. Update `Query.default_factory` to match.
 
 - **ISSUED**: `monotonic_ns()` taken in `PhaseIssuer.issue()` immediately before
   `issuer.issue(query)`. ZMQ push is sync/non-blocking — timestamp is honest.
-- **COMPLETE**: `QueryResult.completed_at` set in `__post_init__` on
-  deserialization in the main process. Measures main-process receipt time, not
-  worker-side completion.
+- **RECV_FIRST / RECV_NON_FIRST / COMPLETE**: one `monotonic_ns()` read per
+  response in `_receive_responses`, when the session handles it. Measures
+  main-process handling time, not worker-side completion. All three use the same
+  clock point, so a response's COMPLETE is never earlier than its own chunks.
+  `QueryResult.completed_at` is set at decode and does not give this guarantee.
 - **TTFT**: `RECV_FIRST - ISSUED` includes full round-trip ZMQ overhead
   (outbound to worker + return to main). This adds 20-100μs of systematic bias.
   Acceptable for most benchmarks; document as a known measurement overhead.
@@ -963,7 +965,7 @@ After a warmup phase (no drain), in-flight responses arrive during the perf
 phase. The receiver must distinguish stale vs current-phase completions:
 
 ```python
-def _handle_response(self, resp: QueryResult) -> None:
+def _handle_response(self, resp: QueryResult, now_ns: int) -> None:
     query_id = resp.id
     phase_issuer = self._current_phase_issuer
     # ERROR is published before COMPLETE (the aggregator depends on this order
@@ -975,7 +977,7 @@ def _handle_response(self, resp: QueryResult) -> None:
     if self._current_phase_type != PhaseType.WARMUP:
         self._publisher.publish(EventRecord(
             event_type=SampleEventType.COMPLETE,
-            timestamp_ns=resp.completed_at,
+            timestamp_ns=now_ns,  # the caller's per-response arrival stamp
             sample_uuid=query_id,
         ))
     # Only route to the current phase's strategy if this is a current-phase query.
