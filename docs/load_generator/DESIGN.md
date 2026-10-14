@@ -352,12 +352,16 @@ poll-based approach.
   until the batch threshold is reached or `flush()` is called. The timestamp
   itself is still accurate (captured before buffering), but the EventRecord
   reaches subscribers with batching latency.
-- COMPLETE: `QueryResult.completed_at` is set via
-  `force_setattr(monotonic_ns())` in `__post_init__`, regenerated on
-  deserialization. Both ISSUED and COMPLETE timestamps share the same ZMQ
-  transit bias. TTFT (`RECV_FIRST - ISSUED`) is still sensitive to this overhead
-  since it spans the full ZMQ round-trip. TPOT avoids cross-process clock skew
-  by computing time deltas between consecutive chunks within the same process.
+- RECV_FIRST, RECV_NON_FIRST and COMPLETE: one `monotonic_ns()` read per
+  response in `_receive_responses`, when the session handles it. All three use
+  this same clock point, so a response's COMPLETE is never earlier than its own
+  chunks. (`QueryResult.completed_at` is set at decode; the transport decodes a
+  whole drain before the session handles any message, so a result decoded in the
+  same drain as its chunks would precede them and give a negative TPOT.) Both
+  ISSUED and COMPLETE timestamps share the same ZMQ transit bias. TTFT
+  (`RECV_FIRST - ISSUED`) is still sensitive to this overhead since it spans the
+  full ZMQ round-trip. TPOT avoids cross-process clock skew by computing time
+  deltas between consecutive chunks within the same process.
 
 ### LoadStrategy (Protocol)
 
@@ -635,7 +639,7 @@ sequenceDiagram
     alt Non-streaming
         W-->>I: ZMQ PUSH (QueryResult)
         I-->>B: recv()
-        B->>E: publish(COMPLETE, uuid, completed_at)
+        B->>E: publish(COMPLETE, uuid, timestamp_ns)
     else Streaming
         W-->>I: ZMQ PUSH (StreamChunk first_chunk)
         I-->>B: recv()
@@ -647,7 +651,7 @@ sequenceDiagram
         end
         W-->>I: ZMQ PUSH (QueryResult — final accumulated output)
         I-->>B: recv()
-        B->>E: publish(COMPLETE, uuid, completed_at)
+        B->>E: publish(COMPLETE, uuid, timestamp_ns)
     end
 
     E->>M: ZMQ PUB (EventRecord)
